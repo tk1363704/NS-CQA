@@ -352,6 +352,7 @@ class PhraseModel(nn.Module):
                 res_logits.append(n.logits)
                 n = n.prevNode
 
+            # [::-1]: Reverse.
             utterance = utterance[::-1]
             res_logits = res_logits[::-1]
             utterances.append(utterance)

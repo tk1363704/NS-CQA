@@ -69,7 +69,7 @@ if __name__ == "__main__":
                 '--att=1',
                 '--lstm=1',
                 '--int',
-                '-w2v=50']
+                '-w2v=300']
 
     parser = argparse.ArgumentParser()
     # parser.add_argument("--data", required=True, help="Category to use for training. "
