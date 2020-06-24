@@ -22,7 +22,7 @@ TRAIN_RATIO = 0.985
 GAMMA = 0.05
 
 DIC_PATH = '../data/auto_QA_data/share.question'
-TRAIN_QUESTION_ANSWER_PATH = '../data/auto_QA_data/mask_even_1.0%/RL_train_TR_new_2k.question'
+TRAIN_QUESTION_ANSWER_PATH = '../data/auto_QA_data/mask_even_1.0%/RL_train_TR_new_5.question'
 TRAIN_944K_QUESTION_ANSWER_PATH = '../data/auto_QA_data/CSQA_DENOTATIONS_full_944K.json'
 DICT_944K = '../data/auto_QA_data/CSQA_result_question_type_944K.json'
 DICT_944K_WEAK = '../data/auto_QA_data/CSQA_result_question_type_count944K.json'
@@ -36,8 +36,8 @@ if __name__ == "__main__":
     # # -a=True means using adaptive reward to train the model. -a=False is using 0-1 reward.
     # sys.argv = ['train_maml_true_reward.py', '--cuda', '-l=../data/saves/rl_even_TR_batch8_1%/truereward_0.739_29.dat', '-n=maml_1%_batch8_att=0_test', '-s=5', '-a=0', '--att=0', '--lstm=1', '--fast-lr=0.1', '--meta-lr=1e-4', '--steps=5', '--batches=1', '--weak=1']
     sys.argv = ['train_maml_retriever_joint.py', '-l=../data/saves/rl_even_TR_batch8_1%/truereward_0.739_29.dat',
-                '-n=maml_newdata2k_reptile_retriever_joint', '--cuda', '-s=5', '-a=0', '--att=0', '--lstm=1', '--fast-lr=1e-4',
-                '--meta-lr=1e-4', '--steps=5', '--batches=1', '--weak=1', '--embed-grad', '--beta=0.1', '--supportsets=5', '-retrieverl=../data/saves/retriever/AdaBound_DocEmbed_QueryEmbed_epoch_140_4.306.dat']
+                '-n=maml_newdata2k_reptile_retriever_joint_test', '--cuda', '-s=5', '-a=0', '--att=0', '--lstm=1', '--fast-lr=1e-4',
+                '--meta-lr=1e-4', '--steps=5', '--batches=1', '--weak=1', '--embed-grad', '--beta=0.1', '--supportsets=5', '--MonteCarlo', '-retrieverl=../data/saves/retriever/AdaBound_DocEmbed_QueryEmbed_epoch_140_4.306.dat']
     parser = argparse.ArgumentParser()
     parser.add_argument("--cuda", action='store_true', default=False, help="Enable cuda")
     parser.add_argument("-n", "--name", required=True, help="Name of the run")
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parser.add_argument("--lstm", type=lambda x: (str(x).lower() in ['true', '1', 'yes']),
                         help="Using LSTM mechanism in seq2seq")
     # The action='store_true' means once the parameter is appeared in the command line, such as '--first-order',
-    # the action is to mark it as 'True';
+    # the action is marked as 'True';
     # If there is no value of the parameter, the value is assigned as 'False'.
     # Conversely, if action is 'store_false', if the parameter has a value, the parameter is viewed as 'False'.
     parser.add_argument('--first-order', action='store_true', help='use the first-order approximation of MAML')
@@ -77,8 +77,10 @@ if __name__ == "__main__":
     # If weak is true, it means when searching for support set, the questions with same number of E/R/T nut different relation will be retrieved if the questions in this pattern is less than the number of steps.
     parser.add_argument('--supportsets', type=int, default=5, help='number of the support sets')
     parser.add_argument("--weak", type=lambda x: (str(x).lower() in ['true', '1', 'yes']),
-                        help="Using weak mode to search for support set")
+                        help="using weak mode to search for support set")
     parser.add_argument('--retriever-random', action='store_true', help='randomly get support set for the retriever')
+    parser.add_argument("--MonteCarlo", action='store_true', default=False,
+                        help="using Monte Carlo algorithm for REINFORCE")
     args = parser.parse_args()
     device = torch.device("cuda" if args.cuda else "cpu")
     log.info("Device info: %s", str(device))
@@ -86,7 +88,6 @@ if __name__ == "__main__":
     saves_path = os.path.join(SAVES_DIR, args.name)
     os.makedirs(saves_path, exist_ok=True)
 
-    # TODO: In maml, all data points in 944K training dataset will be used. So it is much better to use the dict of 944K training the model from scratch.
     # # List of (question, {question information and answer}) pairs, the training pairs are in format of 1:1.
     phrase_pairs, emb_dict = data.load_data_MAML(QUESTION_PATH=TRAIN_QUESTION_ANSWER_PATH, DIC_PATH=DIC_PATH, max_tokens=MAX_TOKENS)
     log.info("Obtained %d phrase pairs with %d uniq words from %s.", len(phrase_pairs), len(emb_dict), TRAIN_QUESTION_ANSWER_PATH)
@@ -135,6 +136,8 @@ if __name__ == "__main__":
         log.info("Using the sum of word embedding to represent the questions during the training...")
     else:
         log.info("Using the document_emb which is stored in the retriever model to represent the questions...")
+    if args.MonteCarlo:
+        log.info("Using Monte Carlo algorithm for Policy Gradient...")
 
     # Index -> word.
     rev_emb_dict = {idx: word for word, idx in emb_dict.items()}
@@ -208,7 +211,7 @@ if __name__ == "__main__":
 
                 # Batch is represented for a batch of tasks in MAML.
                 # In each task, a minibatch of support set is established.
-                meta_losses, running_vars, meta_total_samples, meta_skipped_samples, true_reward_argmax_batch, true_reward_sample_batch = metaLearner.reptile_sample(batch, old_param_dict = old_param_dict, dial_shown=dial_shown, epoch_count=epoch, batch_count=maml_batch_count, docID_dict=docID_dict, rev_docID_dict=rev_docID_dict, emb_dict=emb_dict, qtype_docs_range=qtype_docs_range, random=args.retriever_random)
+                meta_losses, running_vars, meta_total_samples, meta_skipped_samples, true_reward_argmax_batch, true_reward_sample_batch = metaLearner.reptile_sample(batch, old_param_dict=old_param_dict, dial_shown=dial_shown, epoch_count=epoch, batch_count=maml_batch_count, docID_dict=docID_dict, rev_docID_dict=rev_docID_dict, emb_dict=emb_dict, qtype_docs_range=qtype_docs_range, random=args.retriever_random, monte_carlo=args.MonteCarlo)
                 total_samples += meta_total_samples
                 skipped_samples += meta_skipped_samples
                 true_reward_argmax.extend(true_reward_argmax_batch)
@@ -253,7 +256,7 @@ if __name__ == "__main__":
                 metaLearner.retriever_optimizer.zero_grad()
                 metaLearner.retriever_net.zero_grad()
 
-                retriever_losses, retriever_true_reward_argmax_batch, retriever_true_reward_sample_batch, retriever_total_sample, retriever_skipped_sample = metaLearner.retriever_sample(batch, old_param_dict = stage1_old_param_dict, dial_shown=dial_shown, epoch_count=epoch, batch_count=retriever_batch_count, docID_dict=docID_dict, rev_docID_dict=rev_docID_dict, emb_dict=emb_dict, qtype_docs_range=qtype_docs_range, number_of_supportsets=args.supportsets)
+                retriever_losses, retriever_true_reward_argmax_batch, retriever_true_reward_sample_batch, retriever_total_sample, retriever_skipped_sample = metaLearner.retriever_sample(batch, old_param_dict=stage1_old_param_dict, dial_shown=dial_shown, epoch_count=epoch, batch_count=retriever_batch_count, docID_dict=docID_dict, rev_docID_dict=rev_docID_dict, emb_dict=emb_dict, qtype_docs_range=qtype_docs_range, number_of_supportsets=args.supportsets, mc=args.MonteCarlo, device=device)
                 retriever_total_samples += retriever_total_sample
                 retriever_skipped_samples += retriever_skipped_sample
                 retriever_true_reward_argmax.extend(retriever_true_reward_argmax_batch)
@@ -287,7 +290,7 @@ if __name__ == "__main__":
             # test
             # p1 is one sentence, p2 is sentence list.
             for test_task in test_data:
-                _, action_tokens = metaLearner.maml_retriever_sampleForTest(task=test_task, old_param_dict=stage1_old_param_dict, docID_dict=docID_dict, rev_docID_dict=rev_docID_dict, emb_dict=emb_dict, qtype_docs_range=qtype_docs_range, steps=args.steps)
+                _, action_tokens = metaLearner.maml_retriever_sampleForTest(task=test_task, old_param_dict=stage1_old_param_dict, docID_dict=docID_dict, rev_docID_dict=rev_docID_dict, emb_dict=emb_dict, qtype_docs_range=qtype_docs_range, steps=args.steps, mc=args.MonteCarlo)
                 # Using 0-1 reward to compute accuracy.
                 argmax_reward_sum += float(utils.calc_True_Reward(action_tokens, test_task[1], False))
                 # argmax_reward_sum += random.random()

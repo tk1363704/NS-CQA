@@ -72,6 +72,8 @@ if __name__ == "__main__":
     parser.add_argument("-retrieverl", "--retrieverload", required=True,
                         help="Load the pre-trained model whereby continue training the retriever mode")
     parser.add_argument('--retriever-random', action='store_true', help='randomly get support set for the retriever')
+    parser.add_argument("--MonteCarlo", action='store_true', default=False,
+                        help="using Monte Carlo algorithm for REINFORCE")
     args = parser.parse_args()
 
     device = torch.device("cuda" if args.cuda else "cpu")
@@ -157,7 +159,7 @@ if __name__ == "__main__":
         batch_count += 1
         # Batch is represented for a batch of tasks in MAML.
         # In each task, a batch of support set is established.
-        token_string, _ = metaLearner.maml_retriever_sampleForTest(task=test_task, old_param_dict=old_param_dict, docID_dict=docID_dict, rev_docID_dict=rev_docID_dict, emb_dict=emb_dict, qtype_docs_range=qtype_docs_range, steps=args.steps)
+        token_string, _ = metaLearner.maml_retriever_sampleForTest(task=test_task, old_param_dict=old_param_dict, docID_dict=docID_dict, rev_docID_dict=rev_docID_dict, emb_dict=emb_dict, qtype_docs_range=qtype_docs_range, steps=args.steps, mc=args.MonteCarlo)
 
         test_dataset_count += 1
         # log.info("%d PREDICT: %s", test_dataset_count, token_string)
