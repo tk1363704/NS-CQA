@@ -93,6 +93,7 @@ if __name__ == "__main__":
     # If weak is true, it means when searching for support set, the questions with same number of E/R/T nut different relation will be retrieved if the questions in this pattern is less than the number of steps.
     parser.add_argument("--weak", type=lambda x: (str(x).lower() in ['true', '1', 'yes']),
                         help="Using weak mode to search for support set")
+    parser.add_argument("--MonteCarlo", action='store_true', default=False, help="using Monte Carlo algorithm for REINFORCE")
     args = parser.parse_args()
     device = torch.device("cuda" if args.cuda else "cpu")
     log.info("Device info: %s", str(device))
@@ -197,8 +198,7 @@ if __name__ == "__main__":
 
                 # Batch is represented for a batch of tasks in MAML.
                 # In each task, a minibatch of support set is established.
-                meta_losses, grads_list, meta_total_samples, meta_skipped_samples, true_reward_argmax_batch, true_reward_sample_batch = metaLearner.first_order_sample(batch, old_param_dict = old_param_dict, first_order=args.first_order,
-                                       dial_shown=dial_shown, epoch_count=epoch, batch_count=batch_count)
+                meta_losses, grads_list, meta_total_samples, meta_skipped_samples, true_reward_argmax_batch, true_reward_sample_batch = metaLearner.first_order_sample(batch, old_param_dict=old_param_dict, first_order=args.first_order, dial_shown=dial_shown, epoch_count=epoch, batch_count=batch_count, mc=args.MonteCarlo)
                 total_samples += meta_total_samples
                 skipped_samples += meta_skipped_samples
                 true_reward_argmax.extend(true_reward_argmax_batch)

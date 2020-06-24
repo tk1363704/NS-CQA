@@ -271,8 +271,7 @@ class MetaLearner(object):
         return batch
 
     # Return support samples strictly following the probability distribution.
-    def establish_support_set_by_retriever_sampling(self, task, N=5, train_data_support_944K=None, docID_dict=None,
-                                                  rev_docID_dict=None, emb_dict=None, qtype_docs_range=None, number_of_supportsets=5):
+    def establish_support_set_by_retriever_sampling(self, task, N=5, train_data_support_944K=None, docID_dict=None, rev_docID_dict=None, emb_dict=None, qtype_docs_range=None, number_of_supportsets=5):
         retriever_total_samples = 0
         retriever_skip_samples = 0
         batch_list = list()
@@ -289,9 +288,11 @@ class MetaLearner(object):
             document_range = (0, len(docID_dict))
         logsoftmax_output, softmax_output, cos_output = self.retriever_net(query_tensor, document_range)
         # Get top N+45 samples.
+        # A namedtuple of (values, indices) is returned,
+        # where the indices are the indices of the elements in the original input tensor.
         orders = torch.topk(cos_output, N+45)
         order_list = orders[1].tolist()
-        # Get probability of top N+45 samples.
+        # To confine the search space in the top N+45 samples with the highest probabilities.
         order_softmax_output_prob = [softmax_output[x] for x in order_list]
         qid_lists = list()
         for i in range(number_of_supportsets):
@@ -299,8 +300,15 @@ class MetaLearner(object):
             logprob_for_samples = list()
             # Samples elements from [0,..,len(weights)-1] with probability of top N+45 samples.
             # You can also use the keyword replace=False to change the behavior so that sampling is without replacement.
+            # WeightedRandomSampler: Samples elements from [0,..,len(weights)-1] with given probabilities (weights).
             draw = list(WeightedRandomSampler(order_softmax_output_prob, N, replacement=False))
             draw_list = [order_list[j] for j in draw]
+
+            # draw_without_filtering = list(WeightedRandomSampler(softmax_output, N+10, replacement=False))
+            # topNIndices_1 = [k + document_range[0] for k in draw_without_filtering]
+            # logprobs_1 = [logsoftmax_output[k] for k in draw_without_filtering]
+            # topNList_1 = [rev_docID_dict[k] for k in topNIndices_1]
+
             topNIndices = [k + document_range[0] for k in draw_list]
             logprobs = [logsoftmax_output[k] for k in draw_list]
             topNList = [rev_docID_dict[k] for k in topNIndices]
@@ -587,7 +595,7 @@ class MetaLearner(object):
         loss_v = loss_policy_v
         return loss_v, total_samples, skipped_samples, true_reward_argmax_step, true_reward_sample_step
 
-    def first_order_inner_loss(self, task, dial_shown=True):
+    def first_order_inner_loss(self, task, dial_shown=True, mc=False):
         total_samples = 0
         skipped_samples = 0
 
@@ -608,6 +616,7 @@ class MetaLearner(object):
         net_policies = []
         net_actions = []
         net_advantages = []
+        net_losses = []
         # Transform ID to embedding.
         beg_embedding = self.net.emb(self.beg_token)
         beg_embedding = beg_embedding.cuda()
@@ -652,9 +661,16 @@ class MetaLearner(object):
                          argmax_reward)
 
             action_memory = list()
+
+            sample_losses = []
             for _ in range(self.samples):
+                # Monte-carlo: the data for each task in a batch of tasks.
+                inner_net_policies = []
+                inner_net_actions = []
+                inner_net_advantages = []
+
                 # 'r_sample' is the list of out_logits list and 'actions' is the list of output tokens.
-                # The output tokens are sampled following probabilitis by using chain_sampling.
+                # The output tokens are sampled following probabilities by using chain_sampling.
                 r_sample, actions = self.net.decode_chain_sampling(item_enc, beg_embedding, data.MAX_TOKENS,
                                                                    context[idx], stop_at_token=self.end_token)
                 total_samples += 1
@@ -683,60 +699,99 @@ class MetaLearner(object):
                 sample_reward = utils.calc_True_Reward(action_tokens, qa_info, self.adaptive)
                 # sample_reward = random.random()
                 true_reward_sample_step.append(sample_reward)
+                advantages = [sample_reward - argmax_reward] * len(actions)
 
                 if not dial_shown:
                     log.info("Sample: %s, reward=%.4f", utils.untokenize(data.decode_words(actions, self.rev_emb_dict)),
                              sample_reward)
 
-                net_policies.append(r_sample)
-                net_actions.extend(actions)
-                # Regard argmax_bleu calculated from decode_chain_argmax as baseline used in self-critic.
-                # Each token has same reward as 'sample_bleu - argmax_bleu'.
-                # [x] * y: stretch 'x' to [1*y] list in which each element is 'x'.
+                if not mc:
+                    net_policies.append(r_sample)
+                    net_actions.extend(actions)
+                    # Regard argmax_bleu calculated from decode_chain_argmax as baseline used in self-critic.
+                    # Each token has same reward as 'sample_bleu - argmax_bleu'.
+                    # [x] * y: stretch 'x' to [1*y] list in which each element is 'x'.
 
-                # # If the argmax_reward is 1.0, then whatever the sample_reward is,
-                # # the probability of actions that get reward = 1.0 could not be further updated.
-                # # The GAMMA is used to adjust this scenario.
-                # if argmax_reward == 1.0:
-                #     net_advantages.extend([sample_reward - argmax_reward + GAMMA] * len(actions))
-                # else:
-                #     net_advantages.extend([sample_reward - argmax_reward] * len(actions))
+                    # # If the argmax_reward is 1.0, then whatever the sample_reward is,
+                    # # the probability of actions that get reward = 1.0 could not be further updated.
+                    # # The GAMMA is used to adjust this scenario.
+                    # if argmax_reward == 1.0:
+                    #     net_advantages.extend([sample_reward - argmax_reward + GAMMA] * len(actions))
+                    # else:
+                    #     net_advantages.extend([sample_reward - argmax_reward] * len(actions))
+                    net_advantages.extend(advantages)
 
-                net_advantages.extend([sample_reward - argmax_reward] * len(actions))
+                else:
+                    inner_net_policies.append(r_sample)
+                    inner_net_actions.extend(actions)
+                    inner_net_advantages.extend(advantages)
 
-        if not net_policies:
+                if mc:
+                    inner_policies_v = torch.cat(inner_net_policies).to(self.device)
+                    # Indices of all output tokens whose size is 1 * N;
+                    inner_actions_t = torch.LongTensor(inner_net_actions).to(self.device)
+                    # All output tokens reward whose size is 1 *pack_batch N;
+                    inner_adv_v = torch.FloatTensor(inner_net_advantages).to(self.device)
+                    # Compute log(softmax(logits)) of all output tokens in size of N * output vocab size;
+                    inner_log_prob_v = F.log_softmax(inner_policies_v, dim=1).to(self.device)
+                    # Q_1 = Q_2 =...= Q_n = BLEU(OUT,REF);
+                    # ▽J = Σ_n[Q▽logp(T)] = ▽Σ_n[Q*logp(T)] = ▽[Q_1*logp(T_1)+Q_2*logp(T_2)+...+Q_n*logp(T_n)];
+                    # log_prob_v[range(len(net_actions)), actions_t]: for each output, get the output token's log(softmax(logits)).
+                    # adv_v * log_prob_v[range(len(net_actions)), actions_t]:
+                    # get Q * logp(T) for all tokens of all decode_chain_sampling samples in size of 1 * N;
+                    inner_log_prob_actions_v = inner_adv_v * inner_log_prob_v[
+                        range(len(inner_net_actions)), inner_actions_t].to(self.device)
+                    # For the optimizer is Adam (Adaptive Moment Estimation) which is a optimizer used for gradient descent.
+                    # Therefore, to maximize ▽J (log_prob_actions_v) is to minimize -▽J.
+                    # .sum() is calculate the loss for a sample.
+                    inner_sample_loss_policy_v = -inner_log_prob_actions_v.sum().to(self.device)
+                    sample_losses.append(inner_sample_loss_policy_v)
+
+            if mc:
+                task_loss = torch.stack(sample_losses).to(self.device)
+                inner_task_loss_policy_v = task_loss.mean().to(self.device)
+                # Record the loss for each task in a batch.
+                net_losses.append(inner_task_loss_policy_v)
+
+        if not net_losses and not net_policies:
             log.info("The net_policies is empty!")
             # TODO the format of 0.0 should be the same as loss_v.
             return 0.0, total_samples, skipped_samples
 
-        # Data for decode_chain_sampling samples and the number of such samples is the same as args.samples parameter.
-        # Logits of all output tokens whose size is N * output vocab size; N is the number of output tokens of decode_chain_sampling samples.
-        policies_v = torch.cat(net_policies)
-        policies_v = policies_v.cuda()
-        # Indices of all output tokens whose size is 1 * N;
-        actions_t = torch.LongTensor(net_actions).to(self.device)
-        actions_t = actions_t.cuda()
-        # All output tokens reward whose size is 1 * N;
-        adv_v = torch.FloatTensor(net_advantages).to(self.device)
-        adv_v = adv_v.cuda()
-        # Compute log(softmax(logits)) of all output tokens in size of N * output vocab size;
-        log_prob_v = F.log_softmax(policies_v, dim=1)
-        log_prob_v = log_prob_v.cuda()
-        # Q_1 = Q_2 =...= Q_n = BLEU(OUT,REF);
-        # ▽J = Σ_n[Q▽logp(T)] = ▽Σ_n[Q*logp(T)] = ▽[Q_1*logp(T_1)+Q_2*logp(T_2)+...+Q_n*logp(T_n)];
-        # log_prob_v[range(len(net_actions)), actions_t]: for each output, get the output token's log(softmax(logits)).
-        # adv_v * log_prob_v[range(len(net_actions)), actions_t]:
-        # get Q * logp(T) for all tokens of all decode_chain_sampling samples in size of 1 * N;
-        # Suppose log_prob_v is a two-dimensional tensor, value of which is [[1,2,3],[4,5,6],[7,8,9]];
-        # log_prob_actions_v = log_prob_v[[0,1,2], [0,1,2]]
-        # log_prob_actions_v is: tensor([1, 5, 9], device='cuda:0').
-        log_prob_actions_v = adv_v * log_prob_v[range(len(net_actions)), actions_t]
-        log_prob_actions_v = log_prob_actions_v.cuda()
-        # For the optimizer is Adam (Adaptive Moment Estimation) which is a optimizer used for gradient descent.
-        # Therefore, to maximize ▽J (log_prob_actions_v) is to minimize -▽J.
-        # .mean() is to calculate Monte Carlo sampling.
-        loss_policy_v = -log_prob_actions_v.mean()
-        loss_policy_v = loss_policy_v.cuda()
+        if not mc:
+            # Data for decode_chain_sampling samples and the number of such samples is the same as args.samples parameter.
+            # Logits of all output tokens whose size is N * output vocab size; N is the number of output tokens of decode_chain_sampling samples.
+            policies_v = torch.cat(net_policies)
+            policies_v = policies_v.cuda()
+            # Indices of all output tokens whose size is 1 * N;
+            actions_t = torch.LongTensor(net_actions).to(self.device)
+            actions_t = actions_t.cuda()
+            # All output tokens reward whose size is 1 * N;
+            adv_v = torch.FloatTensor(net_advantages).to(self.device)
+            adv_v = adv_v.cuda()
+            # Compute log(softmax(logits)) of all output tokens in size of N * output vocab size;
+            log_prob_v = F.log_softmax(policies_v, dim=1)
+            log_prob_v = log_prob_v.cuda()
+            # Q_1 = Q_2 =...= Q_n = BLEU(OUT,REF);
+            # ▽J = Σ_n[Q▽logp(T)] = ▽Σ_n[Q*logp(T)] = ▽[Q_1*logp(T_1)+Q_2*logp(T_2)+...+Q_n*logp(T_n)];
+            # log_prob_v[range(len(net_actions)), actions_t]: for each output, get the output token's log(softmax(logits)).
+            # adv_v * log_prob_v[range(len(net_actions)), actions_t]:
+            # get Q * logp(T) for all tokens of all decode_chain_sampling samples in size of 1 * N;
+            # Suppose log_prob_v is a two-dimensional tensor, value of which is [[1,2,3],[4,5,6],[7,8,9]];
+            # log_prob_actions_v = log_prob_v[[0,1,2], [0,1,2]]
+            # log_prob_actions_v is: tensor([1, 5, 9], device='cuda:0').
+            log_prob_actions_v = adv_v * log_prob_v[range(len(net_actions)), actions_t]
+            log_prob_actions_v = log_prob_actions_v.cuda()
+            # For the optimizer is Adam (Adaptive Moment Estimation) which is a optimizer used for gradient descent.
+            # Therefore, to maximize ▽J (log_prob_actions_v) is to minimize -▽J.
+            # .mean() is to calculate Monte Carlo sampling.
+            loss_policy_v = -log_prob_actions_v.mean()
+            loss_policy_v = loss_policy_v.cuda()
+
+        else:
+            batch_net_losses = torch.stack(net_losses).to(self.device)
+            # .mean() is utilized to calculate Mini-Batch Gradient Descent.
+            loss_policy_v = batch_net_losses.mean().to(self.device)
 
         loss_v = loss_policy_v
         return loss_v, total_samples, skipped_samples, true_reward_argmax_step, true_reward_sample_step
@@ -952,7 +1007,7 @@ class MetaLearner(object):
         return meta_losses, total_samples, skipped_samples, true_reward_argmax_batch, true_reward_sample_batch
 
     # Using first-order to approximate the result of 2nd order MAML.
-    def first_order_sample(self, tasks, old_param_dict = None, first_order=False, dial_shown=True, epoch_count=0, batch_count=0):
+    def first_order_sample(self, tasks, old_param_dict = None, first_order=False, dial_shown=True, epoch_count=0, batch_count=0, mc=False):
         """
         Sample trajectories (before and after the update of the parameters) for all the tasks `tasks`.
         Here number of tasks is 1.
@@ -980,7 +1035,7 @@ class MetaLearner(object):
 
             for step_sample in support_set:
                 self.inner_optimizer.zero_grad()
-                inner_loss, inner_total_samples, inner_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(step_sample, dial_shown=True)
+                inner_loss, inner_total_samples, inner_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(step_sample, dial_shown=True, mc=mc)
                 total_samples += inner_total_samples
                 skipped_samples += inner_skipped_samples
                 true_reward_argmax_batch.extend(true_reward_argmax_step)
@@ -999,7 +1054,7 @@ class MetaLearner(object):
             # It’s important to call this before loss.backward(),
             # otherwise you’ll accumulate the gradients from multiple passes.
             self.inner_optimizer.zero_grad()
-            meta_loss, outer_total_samples, outer_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(task, dial_shown=dial_shown)
+            meta_loss, outer_total_samples, outer_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(task, dial_shown=dial_shown, mc=mc)
             task_losses.append(meta_loss)
             self.net.zero_grad()
             # Theta <- Theta - beta * (1/k) * ∑_(i=1:k)[grad(loss_theta_in/theta_in)]
@@ -1023,7 +1078,7 @@ class MetaLearner(object):
 
     # Using reptile to implement MAML.
     def reptile_sample(self, tasks, old_param_dict=None, dial_shown=True, epoch_count=0,
-                           batch_count=0, docID_dict=None, rev_docID_dict=None, emb_dict=None, qtype_docs_range=None, random=False):
+                           batch_count=0, docID_dict=None, rev_docID_dict=None, emb_dict=None, qtype_docs_range=None, random=False, monte_carlo=False):
         """Sample trajectories (before and after the update of the parameters)
         for all the tasks `tasks`.
         Here number of tasks is 1.
@@ -1058,7 +1113,7 @@ class MetaLearner(object):
             for step_sample in support_set:
                 self.inner_optimizer.zero_grad()
                 inner_loss, inner_total_samples, inner_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(
-                    step_sample, dial_shown=True)
+                    step_sample, dial_shown=True, mc=monte_carlo)
                 total_samples += inner_total_samples
                 skipped_samples += inner_skipped_samples
                 true_reward_argmax_batch.extend(true_reward_argmax_step)
@@ -1078,7 +1133,7 @@ class MetaLearner(object):
             # otherwise you’ll accumulate the gradients from multiple passes.
             self.inner_optimizer.zero_grad()
             self.net.zero_grad()
-            meta_loss, outer_total_samples, outer_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(task, dial_shown=dial_shown)
+            meta_loss, outer_total_samples, outer_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(task, dial_shown=dial_shown, mc=monte_carlo)
             task_losses.append(meta_loss)
 
             meta_loss.backward()
@@ -1108,7 +1163,7 @@ class MetaLearner(object):
 
     # Train the retriever.
     def retriever_sample(self, tasks, old_param_dict=None, dial_shown=True, epoch_count=0,
-                       batch_count=0, docID_dict=None, rev_docID_dict=None, emb_dict=None, qtype_docs_range=None, number_of_supportsets=5):
+                       batch_count=0, docID_dict=None, rev_docID_dict=None, emb_dict=None, qtype_docs_range=None, number_of_supportsets=5, mc=False, device='cpu'):
         """Sample trajectories (before and after the update of the parameters)
         for all the tasks `tasks`.
         Here number of tasks is 1.
@@ -1138,7 +1193,7 @@ class MetaLearner(object):
             for step_sample in support_set:
                 self.inner_optimizer.zero_grad()
                 inner_loss, _, _, _, _ = self.first_order_inner_loss(
-                    step_sample, dial_shown=True)
+                    step_sample, dial_shown=True, mc=mc)
                 # log.info("        Epoch %d, Batch %d, support sample for argmax_reward %s is trained!" % (epoch_count, batch_count, str(step_sample[1]['qid'])))
                 # Inner update.
                 inner_loss.backward()
@@ -1173,11 +1228,13 @@ class MetaLearner(object):
                                                                          emb_dict=emb_dict,
                                                                          qtype_docs_range=qtype_docs_range,number_of_supportsets=number_of_supportsets)
 
-            retriever_net_policies.append(torch.cat(logprob_lists))
+            if not mc:
+                retriever_net_policies.append(torch.cat(logprob_lists))
             retriever_total_samples += total_samples
             retriever_skipped_samples += skip_samples
             support_set_count = 0
-            for support_set in support_sets:
+            net_losses = []
+            for j, support_set in enumerate(support_sets):
                 # For each task, the initial parameters are the same, i.e., the value stored in old_param_dict.
                 # temp_param_dict = self.get_net_parameter()
                 if old_param_dict is not None:
@@ -1190,7 +1247,7 @@ class MetaLearner(object):
                 for step_sample in support_set:
                     self.inner_optimizer.zero_grad()
                     inner_loss, _, _, _, _ = self.first_order_inner_loss(
-                        step_sample, dial_shown=True)
+                        step_sample, dial_shown=True, mc=mc)
                     # log.info("        Epoch %d, Batch %d, support sets %d, sample for sample_reward %s is trained!" % (epoch_count, batch_count, support_set_count, str(step_sample[1]['qid'])))
                     # Inner update.
                     inner_loss.backward()
@@ -1220,23 +1277,36 @@ class MetaLearner(object):
                 retriever_sample_reward = utils.calc_True_Reward(action_tokens, task[1], self.adaptive)
                 # retriever_sample_reward = random.random()
                 retriever_true_reward_sample_batch.append(retriever_sample_reward)
-                retriever_net_advantages.extend([retriever_sample_reward - retriever_argmax_reward] * len(support_set))
+                advantages = [retriever_sample_reward - retriever_argmax_reward] * len(support_set)
+                if not mc:
+                    retriever_net_advantages.extend(advantages)
+                else:
+                    inner_adv_v = torch.FloatTensor(advantages).to(device)
+                    inner_log_prob_v = logprob_lists[j].to(device)
+                    inner_log_prob_adv_v = inner_log_prob_v * inner_adv_v
+                    inner_log_prob_adv_v = inner_log_prob_adv_v.to(device)
+                    inner_loss_policy_v = -inner_log_prob_adv_v.sum()
+                    inner_loss_policy_v = inner_loss_policy_v.to(device)
+                    net_losses.append(inner_loss_policy_v)
 
             log.info("Epoch %d, Batch %d, task %s for retriever is trained!" % (epoch_count, batch_count, str(task[1]['qid'])))
 
-        log_prob_v = torch.cat(retriever_net_policies)
-        log_prob_v = log_prob_v.cuda()
+        if not mc:
+            log_prob_v = torch.cat(retriever_net_policies)
+            log_prob_v = log_prob_v.cuda()
 
-        adv_v = torch.FloatTensor(retriever_net_advantages)
-        adv_v = adv_v.cuda()
+            adv_v = torch.FloatTensor(retriever_net_advantages)
+            adv_v = adv_v.cuda()
 
-        log_prob_actions_v = log_prob_v * adv_v
-        log_prob_actions_v = log_prob_actions_v.cuda()
+            log_prob_actions_v = log_prob_v * adv_v
+            log_prob_actions_v = log_prob_actions_v.cuda()
 
-        # todo: sum or mean? The actions for one question should be summed up first,
-        #  then average each question's summed value.
-        loss_policy_v = -log_prob_actions_v.mean()
-        loss_policy_v = loss_policy_v.cuda()
+            loss_policy_v = -log_prob_actions_v.mean()
+            loss_policy_v = loss_policy_v.cuda()
+
+        else:
+            batch_net_losses = torch.stack(net_losses).to(device)
+            loss_policy_v = batch_net_losses.mean().to(device)
 
         loss_v = loss_policy_v
         return loss_v, retriever_true_reward_argmax_batch, retriever_true_reward_sample_batch, retriever_total_samples, retriever_skipped_samples
@@ -1354,7 +1424,7 @@ class MetaLearner(object):
 
         return token_string
 
-    def first_order_sampleForTest(self, task, old_param_dict = None, first_order=False, dial_shown=True, epoch_count=0, batch_count=0,random=False):
+    def first_order_sampleForTest(self, task, old_param_dict = None, first_order=False, dial_shown=True, epoch_count=0, batch_count=0,random=False, mc=False):
         """Sample trajectories (before and after the update of the parameters)
         for all the tasks `tasks`.
         Here number of tasks is 1.
@@ -1384,7 +1454,7 @@ class MetaLearner(object):
 
         for step_sample in support_set:
             self.inner_optimizer.zero_grad()
-            inner_loss, inner_total_samples, inner_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(step_sample, dial_shown=True)
+            inner_loss, inner_total_samples, inner_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(step_sample, dial_shown=True, mc=mc)
             total_samples += inner_total_samples
             skipped_samples += inner_skipped_samples
             true_reward_argmax_batch.extend(true_reward_argmax_step)
@@ -1408,7 +1478,7 @@ class MetaLearner(object):
         token_string = token_string.strip()
         return token_string
 
-    def maml_retriever_sampleForTest(self, task, old_param_dict = None, docID_dict=None, rev_docID_dict=None, emb_dict=None, qtype_docs_range=None, steps=5):
+    def maml_retriever_sampleForTest(self, task, old_param_dict = None, docID_dict=None, rev_docID_dict=None, emb_dict=None, qtype_docs_range=None, steps=5, mc=False):
         """Sample trajectories (before and after the update of the parameters)
         for all the tasks `tasks`.
         Here number of tasks is 1.
@@ -1434,7 +1504,7 @@ class MetaLearner(object):
 
         for step_sample in support_set:
             self.inner_optimizer.zero_grad()
-            inner_loss, inner_total_samples, inner_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(step_sample, dial_shown=True)
+            inner_loss, inner_total_samples, inner_skipped_samples, true_reward_argmax_step, true_reward_sample_step = self.first_order_inner_loss(step_sample, dial_shown=True, mc=mc)
             total_samples += inner_total_samples
             skipped_samples += inner_skipped_samples
             true_reward_argmax_batch.extend(true_reward_argmax_step)

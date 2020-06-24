@@ -315,12 +315,13 @@ if __name__ == "__main__":
                     qid = qa_info['qid']
                     action_memory = list()
 
-                    # The data for each task in a batch of tasks.
-                    inner_net_policies = []
-                    inner_net_actions = []
-                    inner_net_advantages = []
-
+                    sample_losses = []
                     for sample_index in range(args.samples):
+                        # The data for each task in a batch of tasks.
+                        inner_net_policies = []
+                        inner_net_actions = []
+                        inner_net_advantages = []
+
                         if args.BeamSearch:
                             # 'r_sample' is the list of out_logits list and 'actions' is the list of output tokens.
                             # The output tokens are sampled following probability by using chain_sampling.
@@ -407,6 +408,28 @@ if __name__ == "__main__":
                                 net_advantages.extend(advantages)
                         true_reward_sample.append(sample_reward)
 
+                        # Compute the loss for each task in a batch.
+                        if args.MonteCarlo:
+                            inner_policies_v = torch.cat(inner_net_policies).to(device)
+                            # Indices of all output tokens whose size is 1 * N;
+                            inner_actions_t = torch.LongTensor(inner_net_actions).to(device)
+                            # All output tokens reward whose size is 1 *pack_batch N;
+                            inner_adv_v = torch.FloatTensor(inner_net_advantages).to(device)
+                            # Compute log(softmax(logits)) of all output tokens in size of N * output vocab size;
+                            inner_log_prob_v = F.log_softmax(inner_policies_v, dim=1).to(device)
+                            # Q_1 = Q_2 =...= Q_n = BLEU(OUT,REF);
+                            # ▽J = Σ_n[Q▽logp(T)] = ▽Σ_n[Q*logp(T)] = ▽[Q_1*logp(T_1)+Q_2*logp(T_2)+...+Q_n*logp(T_n)];
+                            # log_prob_v[range(len(net_actions)), actions_t]: for each output, get the output token's log(softmax(logits)).
+                            # adv_v * log_prob_v[range(len(net_actions)), actions_t]:
+                            # get Q * logp(T) for all tokens of all decode_chain_sampling samples in size of 1 * N;
+                            inner_log_prob_actions_v = inner_adv_v * inner_log_prob_v[
+                                range(len(inner_net_actions)), inner_actions_t].to(device)
+                            # For the optimizer is Adam (Adaptive Moment Estimation) which is a optimizer used for gradient descent.
+                            # Therefore, to maximize ▽J (log_prob_actions_v) is to minimize -▽J.
+                            # .sum() is to calculate loss for a sample.
+                            inner_sample_loss_policy_v = -inner_log_prob_actions_v.sum().to(device)
+                            sample_losses.append(inner_sample_loss_policy_v)
+
                     # Update memory_buffer.
                     if args.CHER and len(action_memory) > 0:
                         if qid not in memory_buffer:
@@ -432,28 +455,12 @@ if __name__ == "__main__":
                                     memory_buffer[qid] = q_memory
                     dial_shown = True
                     # log.info("Epoch %d, Batch %d, Sample %d: %s is trained!", epoch, batch_count, idx, qa_info['qid'])
-                    # Compute the loss for each task in a batch.
+
                     if args.MonteCarlo:
-                        inner_policies_v = torch.cat(inner_net_policies).to(device)
-                        # Indices of all output tokens whose size is 1 * N;
-                        inner_actions_t = torch.LongTensor(inner_net_actions).to(device)
-                        # All output tokens reward whose size is 1 *pack_batch N;
-                        inner_adv_v = torch.FloatTensor(inner_net_advantages).to(device)
-                        # Compute log(softmax(logits)) of all output tokens in size of N * output vocab size;
-                        inner_log_prob_v = F.log_softmax(inner_policies_v, dim=1).to(device)
-                        # Q_1 = Q_2 =...= Q_n = BLEU(OUT,REF);
-                        # ▽J = Σ_n[Q▽logp(T)] = ▽Σ_n[Q*logp(T)] = ▽[Q_1*logp(T_1)+Q_2*logp(T_2)+...+Q_n*logp(T_n)];
-                        # log_prob_v[range(len(net_actions)), actions_t]: for each output, get the output token's log(softmax(logits)).
-                        # adv_v * log_prob_v[range(len(net_actions)), actions_t]:
-                        # get Q * logp(T) for all tokens of all decode_chain_sampling samples in size of 1 * N;
-                        inner_log_prob_actions_v = inner_adv_v * inner_log_prob_v[
-                            range(len(inner_net_actions)), inner_actions_t].to(device)
-                        # For the optimizer is Adam (Adaptive Moment Estimation) which is a optimizer used for gradient descent.
-                        # Therefore, to maximize ▽J (log_prob_actions_v) is to minimize -▽J.
-                        # .mean() is to calculate Monte Carlo sampling.
-                        inner_loss_policy_v = -inner_log_prob_actions_v.mean().to(device)
+                        task_loss = torch.stack(sample_losses).to(device)
+                        inner_task_loss_policy_v = task_loss.mean().to(device)
                         # Record the loss for each task in a batch.
-                        net_losses.append(inner_loss_policy_v)
+                        net_losses.append(inner_task_loss_policy_v)
 
                 if not net_policies and not net_losses:
                     continue

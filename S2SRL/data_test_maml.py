@@ -62,6 +62,8 @@ if __name__ == "__main__":
     # If false, the embedding tensors in the model do not need to be trained.
     parser.add_argument('--embed-grad', action='store_false', help='fix embeddings when training')
     parser.add_argument('--retriever-random', action='store_true', help='randomly get support set for the retriever')
+    parser.add_argument("--MonteCarlo", action='store_true', default=False,
+                        help="using Monte Carlo algorithm for REINFORCE")
     args = parser.parse_args()
 
     device = torch.device("cuda" if args.cuda else "cpu")
@@ -135,7 +137,7 @@ if __name__ == "__main__":
         batch_count += 1
         # Batch is represented for a batch of tasks in MAML.
         # In each task, a batch of support set is established.
-        token_string = metaLearner.first_order_sampleForTest(test_task, old_param_dict=old_param_dict, random=args.retriever_random)
+        token_string = metaLearner.first_order_sampleForTest(test_task, old_param_dict=old_param_dict, random=args.retriever_random, mc=args.MonteCarlo)
 
         test_dataset_count += 1
         # log.info("%d PREDICT: %s", test_dataset_count, token_string)
