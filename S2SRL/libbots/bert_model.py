@@ -4,49 +4,39 @@ import torch
 import torch.nn as nn
 import torch.nn.utils.rnn as rnn_utils
 import torch.nn.functional as F
+from transformers import BertModel, BertTokenizer, AdamW, get_linear_schedule_with_warmup
 
 from collections import OrderedDict
 from . import utils
 from . import attention
 from . import beam_search_node
 from queue import PriorityQueue
-
 HIDDEN_STATE_SIZE = 128
-EMBEDDING_DIM = 50
-
+EMBEDDING_DIM = 300
 
 # nn.Module: Base class for all neural network modules.
 # Your models should also subclass this class.
-class PhraseModel(nn.Module):
-    def __init__(self, emb_size, dict_size, hid_size, LSTM_FLAG, ATT_FLAG, EMBED_FLAG=True):
-        # Call __init__ function of PhraseModel's parent class (nn.Module).
-        super(PhraseModel, self).__init__()
-
+class CqaBertModel(nn.Module):
+    def __init__(self, pre_trained_model_name, fix_flag, emb_size, dict_size, hid_size, LSTM_FLAG, EMBED_FLAG=True, ATT_FLAG=False):
+        super(CqaBertModel, self).__init__()
         # self.embedding = torch.nn.Embedding(num_embeddings=vocab_size, embedding_dim=embeding_dim)
         # num_embeddings = vocab_size
         # embedding_dim = embeding_dim
         # If no pre-trained embeddings is designated, the random vectors will be initialized.
         self.emb = nn.Embedding(num_embeddings=dict_size, embedding_dim=emb_size)
         if not EMBED_FLAG:
-            for p in self.parameters():
-                p.requires_grad = False
-
-        # # BiLSTM
+            self.freeze_embedding()
+        else:
+            self.unfreeze_embedding()
+        self.bert = BertModel.from_pretrained(pre_trained_model_name)
+        if fix_flag:
+            self.freeze_bert_encoder()
+        else:
+            self.unfreeze_bert_encoder()
+        self.drop = nn.Dropout(p=0.3)
+        self.bert_out = nn.Linear(self.bert.config.hidden_size, hid_size)
         # self.encoder = nn.LSTM(input_size=emb_size, hidden_size=hid_size,
-        #                        num_layers=1, batch_first=True, bidirectional=True)
-        # self.decoder = nn.LSTM(input_size=emb_size, hidden_size=hid_size,
-        #                                               num_layers=2, batch_first=True)
-
-        # LSTM
-        # Inputs of LSTM are: input, (h_0, c_0).
-        # In which input is (seq_len, batch, input_size): tensor containing the features of the input sequence.
-        # (h_0, c_0) is the initial hidden state and cell state for each element in the batch.
-        # Outputs of LSTM are: output, (h_n, c_n).
-        # In which output is (seq_len, batch, num_directions * hidden_size):
-        # tensor containing the output features (h_t) from the last layer of the LSTM, for each t.
-        # (h_n, c_n) is tensor containing the hidden state and cell state for t = seq_len in the batch.
-        self.encoder = nn.LSTM(input_size=emb_size, hidden_size=hid_size,
-                               num_layers=1, batch_first=True)
+        #                        num_layers=1, batch_first=True)
         self.decoder = nn.LSTM(input_size=emb_size, hidden_size=hid_size,
                                num_layers=1, batch_first=True)
         self.output = nn.Sequential(
@@ -57,6 +47,34 @@ class PhraseModel(nn.Module):
         if self.attention_flag:
             self.attention = attention.Attention(hid_size)
             print('Build attention layer.')
+
+    # The last_hidden_state is a sequence of hidden states of the last layer of the model.
+    # Obtaining the pooled_output is done by applying the BertPooler on last_hidden_state
+    # You can think of the pooled_output as a summary of the content, according to BERT.
+    def bert_encode(self, input_ids, attention_mask):
+        last_hidden_state, pooled_output = self.bert(
+            input_ids=input_ids,
+            attention_mask=attention_mask
+        )
+        output_pool = self.drop(pooled_output)
+        output_hidden_states = self.drop(last_hidden_state)
+        return self.bert_out(output_pool), self.bert_out(output_hidden_states)
+
+    def freeze_embedding(self):
+        for param in self.emb.parameters():
+            param.requires_grad = False
+
+    def unfreeze_embedding(self):
+        for param in self.emb.parameters():
+            param.requires_grad = True
+
+    def freeze_bert_encoder(self):
+        for param in self.bert.parameters():
+            param.requires_grad = False
+
+    def unfreeze_bert_encoder(self):
+        for param in self.bert.parameters():
+            param.requires_grad = True
 
     def zero_grad(self, params=None):
         if params is None:
