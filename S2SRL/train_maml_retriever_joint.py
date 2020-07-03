@@ -16,7 +16,7 @@ import ptan
 
 SAVES_DIR = "../data/saves"
 
-MAX_EPOCHES = 30
+MAX_EPOCHES = 4
 MAX_TOKENS = 40
 TRAIN_RATIO = 0.985
 GAMMA = 0.05

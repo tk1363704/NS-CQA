@@ -7,7 +7,8 @@ import numpy as np
 import sys
 from tensorboardX import SummaryWriter
 import time
-from libbots import data, model, utils
+from libbots import data, model, utils, bert_model
+from transformers import BertModel, BertTokenizer, AdamW, get_linear_schedule_with_warmup
 
 import torch
 import torch.optim as optim
@@ -40,13 +41,17 @@ TRAIN_QUESTION_PATH_INT_WEBQSP = '../data/webqsp_data/mask/PT_train.question'
 TRAIN_ACTION_PATH_INT_WEBQSP = '../data/webqsp_data/mask/PT_train.action'
 DIC_PATH_INT_WEBQSP = '../data/webqsp_data/share.webqsp.question'
 
-def run_test(test_data, net, end_token, device="cuda"):
+PRE_TRAINED_MODEL_NAME = 'bert-base-uncased'
+
+def run_test(test_data, net, end_token, device="cuda", rev_emb_dict=None, tokenizer=None, max_tokens=None):
     bleu_sum = 0.0
     bleu_count = 0
     for p1, p2 in test_data:
+        p_list = [(p1, p2)]
+        input_ids, attention_masks = tokenizer_encode(tokenizer, p_list, rev_emb_dict, device, max_tokens)
+        output, output_hidden_states = net.bert_encode(input_ids, attention_masks)
+        context, enc = output_hidden_states, (output.unsqueeze(0), output.unsqueeze(0))
         input_seq = net.pack_input(p1, net.emb, device)
-        # enc = net.encode(input_seq)
-        context, enc = net.encode_context(input_seq)
         # Return logits (N*outputvocab), res_tokens (1*N)
         # Always use the first token in input sequence, which is '#BEG' as the initial input of decoder.
         # The maximum length of the output is defined in class libbots.data.
@@ -58,6 +63,28 @@ def run_test(test_data, net, end_token, device="cuda"):
         bleu_count += 1
     return bleu_sum / bleu_count
 
+def tokenizer_encode(tokenizer, batch_text, rev_emb_dict, device, max_tokens):
+    input_ids_list = []
+    attention_mask_list = []
+    for sample in batch_text:
+        sample_tokens = [rev_emb_dict[x] for x in sample[0]]
+        sample_utterence = ' '.join(sample_tokens).strip()
+        encoding = tokenizer.encode_plus(
+            sample_utterence,
+            max_length=max_tokens,
+            add_special_tokens=True,  # Add '[CLS]' and '[SEP]'
+            return_token_type_ids=False,
+            pad_to_max_length=True,
+            return_attention_mask=True,
+            return_tensors='pt',  # Return PyTorch tensors
+            truncation=True
+        )
+        input_ids_list.append(encoding['input_ids'].to(device))
+        attention_mask_list.append(encoding['attention_mask'].to(device))
+    input_ids_s = torch.cat(input_ids_list, dim=0)
+    attention_mask_s = torch.cat(attention_mask_list, dim=0)
+    return input_ids_s, attention_mask_s
+
 if __name__ == "__main__":
     logging.basicConfig(format="%(asctime)-15s %(levelname)s %(message)s", level=logging.INFO)
 
@@ -65,11 +92,13 @@ if __name__ == "__main__":
     sys.argv = ['train_crossent.py',
                 '--cuda',
                 '-d=csqa',
-                '--n=crossent_even_1%_att=0_withINT',
-                '--att=1',
+                '--n=crossent_even_1%_att=0_withINT_BERT_test',
+                '--att=0',
                 '--lstm=1',
                 '--int',
-                '-w2v=300']
+                '-w2v=300',
+                '--bert',
+                '--fix_bert']
 
     parser = argparse.ArgumentParser()
     # parser.add_argument("--data", required=True, help="Category to use for training. "
@@ -84,9 +113,11 @@ if __name__ == "__main__":
                         help="Using attention mechanism in seq2seq")
     parser.add_argument("--lstm", type=lambda x: (str(x).lower() in ['true', '1', 'yes']),
                         help="Using LSTM mechanism in seq2seq")
-    # If false, the embedding tensors in the model do not need to be trained.
+    # If false, the embedding tensors in to(device)the model do not need to be trained.
     parser.add_argument('--embed-grad', action='store_false', help='the embeddings would not be optimized when training')
     parser.add_argument('--int', action='store_true', help='training model with INT mask information')
+    parser.add_argument('--bert', action='store_true', help='training model with BERT')
+    parser.add_argument('--fix_bert', action='store_true', help='training model with fixed BERT')
     parser.add_argument("-w2v", "--word_dimension", type=int, default=50, help="The dimension of the word embeddings")
     args = parser.parse_args()
     device = torch.device("cuda" if args.cuda else "cpu")
@@ -96,6 +127,7 @@ if __name__ == "__main__":
     isExists = os.path.exists(saves_path)
     if not isExists:
         os.makedirs(saves_path)
+
     # saves_path = os.path.join(SAVES_DIR, args.name)
     # os.makedirs(saves_path, exist_ok=True)
 
@@ -114,6 +146,9 @@ if __name__ == "__main__":
             phrase_pairs, emb_dict = data.load_data_from_existing_data(TRAIN_QUESTION_PATH_INT, TRAIN_ACTION_PATH_INT, DIC_PATH_INT, MAX_TOKENS_INT)
         else:
             phrase_pairs, emb_dict = data.load_data_from_existing_data(TRAIN_QUESTION_PATH_INT_WEBQSP, TRAIN_ACTION_PATH_INT_WEBQSP, DIC_PATH_INT_WEBQSP, MAX_TOKENS_INT)
+
+    if args.bert:
+        log.info("Training model with BERT...")
 
     # Index -> word.
     rev_emb_dict = {idx: word for word, idx in emb_dict.items()}
@@ -137,18 +172,29 @@ if __name__ == "__main__":
     else:
         log.info("Using RNN mechanism to train the SEQ2SEQ model...")
 
-    net = model.PhraseModel(emb_size=args.word_dimension, dict_size=len(emb_dict),
-                            hid_size=model.HIDDEN_STATE_SIZE, LSTM_FLAG=args.lstm, ATT_FLAG=args.att).to(device)
+    net = bert_model.CqaBertModel(pre_trained_model_name=PRE_TRAINED_MODEL_NAME, fix_flag=args.fix_bert, emb_size=args.word_dimension, dict_size=len(emb_dict), hid_size=model.HIDDEN_STATE_SIZE, LSTM_FLAG=args.lstm).to(device)
+    tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
+
     # 转到cuda
     net.cuda()
     log.info("Model: %s", net)
 
     writer = SummaryWriter(comment="-" + args.name)
 
-    optimiser = optim.Adam(net.parameters(), lr=LEARNING_RATE)
+    # optimiser = optim.Adam(net.parameters(), lr=LEARNING_RATE)
+    optimiser = AdamW(filter(lambda p: p.requires_grad, net.parameters()), lr=2e-5, correct_bias=False, eps=1e-8)
     best_bleu = None
 
     time_start = time.time()
+
+    # Total number of training steps is [number of batches] x [number of epochs].
+    # (Note that this is not the same as the number of training samples).
+    total_steps = len(train_data) // BATCH_SIZE * MAX_EPOCHES
+
+    # Create the learning rate scheduler.
+    scheduler = get_linear_schedule_with_warmup(optimiser,
+                                                num_warmup_steps=0,  # Default value in run_glue.py
+                                                num_training_steps=total_steps)
 
     for epoch in range(MAX_EPOCHES):
         losses = []
@@ -184,12 +230,35 @@ if __name__ == "__main__":
             # net.encode calls nn.LSTM by which the forward function is called to run the neural network.
             # enc is a batch of last time step's hidden state outputted by encoder.
             # enc = net.encode(input_seq)
-            context, enc = net.encode_context(input_seq)
+
+            max_tokens = (MAX_TOKENS_INT + 40) if args.int else (MAX_TOKENS + 40)
+            # TODO: Transform IDs to tokens might cause information loss.
+            input_ids_s, attention_mask_s = tokenizer_encode(tokenizer, batch, rev_emb_dict, device, max_tokens)
+            output, output_hidden_states = net.bert_encode(input_ids_s, attention_mask_s)
+
+            # torch.unsqueeze(index) to add a dimension for the tensor.
+            # torch.unsqueeze(input, dim) → Tensor:
+            # Returns a new tensor with a dimension of size one inserted at the specified position.
+            # The returned tensor shares the same underlying data with this tensor.
+            # A dim value within the range [-input.dim() - 1, input.dim() + 1) can be used.
+            # Negative dim will correspond to unsqueeze() applied at dim = dim + input.dim() + 1.
+            # >>> x = torch.tensor([1, 2, 3, 4])
+            # >>> torch.unsqueeze(x, 0)
+            # tensor([[ 1,  2,  3,  4]])
+            # >>> torch.unsqueeze(x, 1)
+            # tensor([[ 1],
+            #         [ 2],
+            #         [ 3],
+            #         [ 4]])
+            context, enc = output_hidden_states, (output.unsqueeze(0), output.unsqueeze(0))
+
+            # context, enc = net.encode_context(input_seq)
 
             net_results = []
             net_targets = []
             for idx, out_seq in enumerate(out_seq_list):
                 ref_indices = out_idx[idx][1:]
+                # TODO: how to use the output of the BERT as the input of the LSTM decoder?
                 # Get the last step's hidden state and cell state of encoder for the idx-th element in a batch.
                 enc_item = net.get_encoded_item(enc, idx)
                 # Using teacher forcing to train the model.
@@ -224,11 +293,22 @@ if __name__ == "__main__":
             loss_v = F.cross_entropy(results_v, targets_v)
             loss_v = loss_v.cuda()
             loss_v.backward()
+
+            # # Clip the norm of the gradients to 1.0.
+            # # This is to help prevent the "exploding gradients" problem.
+            # torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+
+            # Update parameters and take a step using the computed gradient.
+            # The optimizer dictates the "update rule"--how the parameters are
+            # modified based on their gradients, the learning rate, etc.
             optimiser.step()
+
+            # Update the learning rate.
+            scheduler.step()
 
             losses.append(loss_v.item())
         bleu = bleu_sum / bleu_count
-        bleu_test = run_test(test_data, net, end_token, device)
+        bleu_test = run_test(test_data, net, end_token, device, rev_emb_dict, tokenizer, max_tokens)
         log.info("Epoch %d: mean loss %.3f, mean BLEU %.3f, test BLEU %.3f",
                  epoch, np.mean(losses), bleu, bleu_test)
         writer.add_scalar("loss", np.mean(losses), epoch)
