@@ -130,6 +130,18 @@ class PhraseModel(nn.Module):
     # tensor containing the output features (h_t) from the last layer of the LSTM, for each t.
     # hid is (h_n, c_n), which is tensor containing the hidden state and cell state for t = seq_len.
     def encode_context(self, x):
+        # Inputs of LSTM: input, (h_0, c_0)
+        #         - **input** of shape `(seq_len, batch, input_size)`: tensor containing the features
+        #           of the input sequence.
+        #           The input can also be a packed variable length sequence.
+        #           See :func:`torch.nn.utils.rnn.pack_padded_sequence` or
+        #           :func:`torch.nn.utils.rnn.pack_sequence` for details.
+        #         - **h_0** of shape `(num_layers * num_directions, batch, hidden_size)`: tensor
+        #           containing the initial hidden state for each element in the batch.
+        #           If the LSTM is bidirectional, num_directions should be 2, else it should be 1.
+        #         - **c_0** of shape `(num_layers * num_directions, batch, hidden_size)`: tensor
+        #           containing the initial cell state for each element in the batch.
+        #           If `(h_0, c_0)` is not provided, both **h_0** and **c_0** default to zero.
         packed_context, hid = self.encoder(x)
         # It is an inverse operation to :func:`pack_padded_sequence`.
         # Unpack your output if required.
