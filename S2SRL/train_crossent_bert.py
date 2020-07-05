@@ -16,9 +16,9 @@ import torch.nn.functional as F
 
 SAVES_DIR = "../data/saves"
 
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 LEARNING_RATE = 1e-3
-MAX_EPOCHES = 100
+MAX_EPOCHES = 200
 MAX_TOKENS = 40
 MAX_TOKENS_INT = 43
 
@@ -98,7 +98,8 @@ if __name__ == "__main__":
                 '--int',
                 '-w2v=300',
                 '--bert',
-                '--fix_bert']
+                '--fix_bert',
+                '--trans_bert']
 
     parser = argparse.ArgumentParser()
     # parser.add_argument("--data", required=True, help="Category to use for training. "
@@ -119,6 +120,8 @@ if __name__ == "__main__":
     parser.add_argument('--bert', action='store_true', help='training model with BERT')
     parser.add_argument('--fix_bert', action='store_true', help='training model with fixed BERT')
     parser.add_argument("-w2v", "--word_dimension", type=int, default=50, help="The dimension of the word embeddings")
+    parser.add_argument('--trans_bert', action='store_true',
+                        help='transform the pooled hidden state into the initial input token of the LSTM decoder')
     args = parser.parse_args()
     device = torch.device("cuda" if args.cuda else "cpu")
     log.info("Device info: %s", str(device))
@@ -149,6 +152,8 @@ if __name__ == "__main__":
 
     if args.bert:
         log.info("Training model with BERT...")
+    if args.trans_bert:
+        log.info("Transform the pooled hidden state into the initial input token of the LSTM decoder...")
 
     # Index -> word.
     rev_emb_dict = {idx: word for word, idx in emb_dict.items()}
@@ -172,7 +177,7 @@ if __name__ == "__main__":
     else:
         log.info("Using RNN mechanism to train the SEQ2SEQ model...")
 
-    net = bert_model.CqaBertModel(pre_trained_model_name=PRE_TRAINED_MODEL_NAME, fix_flag=args.fix_bert, emb_size=args.word_dimension, dict_size=len(emb_dict), hid_size=model.HIDDEN_STATE_SIZE, LSTM_FLAG=args.lstm).to(device)
+    net = bert_model.CqaBertModel(pre_trained_model_name=PRE_TRAINED_MODEL_NAME, fix_flag=args.fix_bert, emb_size=args.word_dimension, dict_size=len(emb_dict), hid_size=model.HIDDEN_STATE_SIZE, LSTM_FLAG=args.lstm,BERT_TO_EMBEDDING_FLAG=args.trans_bert).to(device)
     tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
 
     # 转到cuda
@@ -250,7 +255,12 @@ if __name__ == "__main__":
             #         [ 2],
             #         [ 3],
             #         [ 4]])
-            context, enc = output_hidden_states, (output.unsqueeze(0), output.unsqueeze(0))
+
+            if args.trans_bert:
+                initial_input_for_decoder = net.bert_to_embedding(output)
+                context, enc = output_hidden_states, net.bert_decode_one(initial_input_for_decoder)
+            else:
+                context, enc = output_hidden_states, (output.unsqueeze(0), output.unsqueeze(0))
 
             # context, enc = net.encode_context(input_seq)
 

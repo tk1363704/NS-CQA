@@ -17,7 +17,7 @@ EMBEDDING_DIM = 300
 # nn.Module: Base class for all neural network modules.
 # Your models should also subclass this class.
 class CqaBertModel(nn.Module):
-    def __init__(self, pre_trained_model_name, fix_flag, emb_size, dict_size, hid_size, LSTM_FLAG, EMBED_FLAG=True, ATT_FLAG=False):
+    def __init__(self, pre_trained_model_name, fix_flag, emb_size, dict_size, hid_size, LSTM_FLAG, EMBED_FLAG=True, ATT_FLAG=False, BERT_TO_EMBEDDING_FLAG=False):
         super(CqaBertModel, self).__init__()
         # self.embedding = torch.nn.Embedding(num_embeddings=vocab_size, embedding_dim=embeding_dim)
         # num_embeddings = vocab_size
@@ -47,6 +47,9 @@ class CqaBertModel(nn.Module):
         if self.attention_flag:
             self.attention = attention.Attention(hid_size)
             print('Build attention layer.')
+        # Transform the pooled output of the BERT into the initial input of the LSTM decoder with the dimension of the word embedding.
+        if BERT_TO_EMBEDDING_FLAG:
+            self.bert_to_embedding = nn.Linear(hid_size, emb_size)
 
     # The last_hidden_state is a sequence of hidden states of the last layer of the model.
     # Obtaining the pooled_output is done by applying the BertPooler on last_hidden_state
@@ -188,6 +191,34 @@ class CqaBertModel(nn.Module):
         out = self.output(out)
         # squeeze: Returns a tensor with all the dimensions of :attr:`input` of size `1` removed.
         return out.squeeze(dim=0), new_hid
+
+    def bert_decode_one(self, input_x):
+        # Example for unsqueeze:
+        #             >>> x = torch.tensor([1, 2, 3, 4])
+        #             >>> torch.unsqueeze(x, 0)
+        #             tensor([[ 1,  2,  3,  4]])
+        #             >>> torch.unsqueeze(x, 1)
+        #             tensor([[ 1],
+        #                     [ 2]
+        #                     [ 3],
+        #                     [ 4]])
+        # Inputs of LSTM: input, (h_0, c_0)
+        #         - **input** of shape `(seq_len, batch, input_size)`: tensor containing the features
+        #           of the input sequence.
+        #           The input can also be a packed variable length sequence.
+        #           See :func:`torch.nn.utils.rnn.pack_padded_sequence` or
+        #           :func:`torch.nn.utils.rnn.pack_sequence` for details.
+        #         - **h_0** of shape `(num_layers * num_directions, batch, hidden_size)`: tensor
+        #           containing the initial hidden state for each element in the batch.
+        #           If the LSTM is bidirectional, num_directions should be 2, else it should be 1.
+        #         - **c_0** of shape `(num_layers * num_directions, batch, hidden_size)`: tensor
+        #           containing the initial cell state for each element in the batch.
+        #           If `(h_0, c_0)` is not provided, both **h_0** and **c_0** default to zero.
+        #           batch_first – If True,
+        #           then the input and output tensors are provided as (batch, seq, feature). Default: False
+        #           In our LSTM, the batch_first is set as True.
+        out, hc = self.decoder(input_x.unsqueeze(1))
+        return hc
 
     def decode_chain_argmax(self, hid, begin_emb, seq_len, context, stop_at_token=None):
         """
