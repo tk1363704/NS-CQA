@@ -39,18 +39,16 @@ TEST_ACTION_PATH = '../data/auto_QA_data/mask_even/PT_test.action'
 TEST_QUESTION_PATH_INT = '../data/auto_QA_data/mask_test/SAMPLE_FINAL_INT_test.question'
 TEST_ACTION_PATH_INT = '../data/auto_QA_data/mask_test/SAMPLE_FINAL_INT_test.action'
 
+DIC_PATH_WEBQSP = '../data/webqsp_data/share.webqsp.question.vocab'
+DIC_PATH_INT_WEBQSP = '../data/webqsp_data/share.webqsp.question.vocab'
 TRAIN_QUESTION_PATH_WEBQSP = '../data/webqsp_data/mask/PT_train.question'
 TRAIN_ACTION_PATH_WEBQSP = '../data/webqsp_data/mask/PT_train.action'
-DIC_PATH_WEBQSP = '../data/webqsp_data/share.webqsp.question'
 TRAIN_QUESTION_PATH_INT_WEBQSP = '../data/webqsp_data/mask/PT_train.question'
 TRAIN_ACTION_PATH_INT_WEBQSP = '../data/webqsp_data/mask/PT_train.action'
-DIC_PATH_INT_WEBQSP = '../data/webqsp_data/share.webqsp.question'
 TEST_QUESTION_PATH_WEBQSP = '../data/webqsp_data/mask/PT_train.question'
 TEST_ACTION_PATH_WEBQSP = '../data/webqsp_data/mask/PT_train.action'
 TEST_QUESTION_PATH_INT_WEBQSP = '../data/webqsp_data/mask/PT_train.question'
 TEST_ACTION_PATH_INT_WEBQSP = '../data/webqsp_data/mask/PT_train.action'
-
-
 
 PRE_TRAINED_MODEL_NAME = 'bert-base-uncased'
 
@@ -73,6 +71,38 @@ def run_test(test_data, net, end_token, device="cuda", rev_emb_dict=None, tokeni
         bleu_sum += utils.calc_bleu(tokens, p2[1:])
         bleu_count += 1
     return bleu_sum / bleu_count
+
+# Calculate 0-1 sparse reward for samples in test dataset to judge the performance of the model.
+def run_test_true_reward(test_data, net, rev_emb_dict, end_token, device="cuda"):
+    argmax_reward_sum = 0.0
+    argmax_reward_count = 0.0
+    # p1 is one sentence, p2 is sentence list.
+    for p1, p2 in test_data:
+        # Transform sentence to padded embeddings.
+        input_seq = net.pack_input(p1, net.emb, device)
+        # Get hidden states from encoder.
+        # enc = net.encode(input_seq)
+        context, enc = net.encode_context(input_seq)
+        # Decode sequence by feeding predicted token to the net again. Act greedily.
+        # Return N*outputvocab, N output token indices.
+        _, tokens = net.decode_chain_argmax(enc, net.emb(beg_token), seq_len=data.MAX_TOKENS, context = context[0], stop_at_token=end_token)
+        # Show what the output action sequence is.
+        action_tokens = []
+        for temp_idx in tokens:
+            if temp_idx in rev_emb_dict and rev_emb_dict.get(temp_idx) != '#END':
+                action_tokens.append(str(rev_emb_dict.get(temp_idx)).upper())
+        # Using 0-1 reward to compute accuracy.
+        if args.dataset == "csqa":
+            argmax_reward_sum += float(utils.calc_True_Reward(action_tokens, p2, False))
+        else:
+            argmax_reward_sum += float(utils.calc_True_Reward_webqsp_novar(action_tokens, p2, False))
+
+        argmax_reward_count += 1
+
+    if argmax_reward_count == 0:
+        return 0.0
+    else:
+        return float(argmax_reward_sum) / float(argmax_reward_count)
 
 def tokenizer_encode(tokenizer, batch_text, rev_emb_dict, device, max_tokens):
     input_ids_list = []
@@ -102,8 +132,9 @@ if __name__ == "__main__":
     # command line parameters
     sys.argv = ['train_crossent.py',
                 '--cuda',
-                '-d=csqa',
-                '-m=train',
+                '-d=webqsp',
+                '-o=train',
+                '-m=epoch_010_0.872_0.810.dat',
                 '--n=crossent_even_1%_att=0_withINT_BERT_test',
                 '--att=0',
                 '--lstm=1',
@@ -116,9 +147,10 @@ if __name__ == "__main__":
     # parser.add_argument("--data", required=True, help="Category to use for training. "
     #                                                   "Empty string to train on full processDataset")
     parser.add_argument("--cuda", action='store_true', default=False,
-                        help="Enable cuda")
+                            help="Enable cuda")
     parser.add_argument("-d", "--dataset", default="csqa", help="Name of the dataset")
-    parser.add_argument("-m", "--mode", default="train", help="train or test")
+    parser.add_argument("-o", "--mode", default="train", help="train or test")
+    parser.add_argument("-m", "--model", required=True, help="Model name to load")
     parser.add_argument("-n", "--name", required=True, help="Name of the run")
     # Choose the function to compute reward (0-1 or adaptive reward).
     # If a = true, 1 or yes, the adaptive reward is used. Otherwise 0-1 reward is used.
@@ -137,6 +169,7 @@ if __name__ == "__main__":
     log.info("Device info: %s", str(device))
 
     max_tokens = (MAX_TOKENS_INT + 40) if args.int else (MAX_TOKENS + 40)
+    tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
 
     if args.mode == "test":
         # To get the input-output pairs and the relevant dictionary.
@@ -146,7 +179,7 @@ if __name__ == "__main__":
                 phrase_pairs, emb_dict = data.load_data_from_existing_data(TEST_QUESTION_PATH, TEST_ACTION_PATH,
                                                                            DIC_PATH, MAX_TOKENS)
             else:
-                phrase_pairs, emb_dict = data.load_data_from_existing_data(TEST_QUESTION_PATH_WEBQSP,
+                phrase_pairs, emb_dict = data.load_data_from_existing_data_bert(tokenizer, TEST_QUESTION_PATH_WEBQSP,
                                                                            TEST_ACTION_PATH_WEBQSP, DIC_PATH_WEBQSP,
                                                                            MAX_TOKENS)
         if args.int:
@@ -156,29 +189,27 @@ if __name__ == "__main__":
                                                                            TEST_ACTION_PATH_INT, DIC_PATH_INT,
                                                                            MAX_TOKENS_INT)
             else:
-                phrase_pairs, emb_dict = data.load_data_from_existing_data(TEST_QUESTION_PATH_INT_WEBQSP,
+                phrase_pairs, emb_dict = data.load_data_from_existing_data_bert(tokenizer, TEST_QUESTION_PATH_INT_WEBQSP,
                                                                            TEST_ACTION_PATH_INT_WEBQSP,
                                                                            DIC_PATH_INT_WEBQSP, MAX_TOKENS_INT)
+
         # Index -> word.
         rev_emb_dict = {idx: word for word, idx in emb_dict.items()}
         log.info("Obtained %d phrase pairs with %d uniq words from %s and %s.",
                  len(phrase_pairs), len(emb_dict), TRAIN_QUESTION_PATH, TRAIN_ACTION_PATH)
         end_token = emb_dict[data.END_TOKEN]
         # 将tokens转换为emb_dict中的indices;
-        test_data = data.encode_phrase_pairs(phrase_pairs, emb_dict)
+        # test_data = data.encode_phrase_pairs(phrase_pairs, emb_dict)
+        test_data = data.encode_phrase_pairs_bert(tokenizer, phrase_pairs, emb_dict)
 
         net = bert_model.CqaBertModel(pre_trained_model_name=PRE_TRAINED_MODEL_NAME, fix_flag=args.fix_bert,
                                       emb_size=args.word_dimension, dict_size=len(emb_dict),
                                       hid_size=model.HIDDEN_STATE_SIZE, LSTM_FLAG=args.lstm).to(device)
-        tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
-        args.model = 'pre_bleu_0.678_99.dat'
         model_path = '../data/saves/' + str(args.name) + '/' + str(args.model)
         net.load_state_dict((torch.load(model_path)))
 
         bleu_test = run_test(test_data, net, end_token, device, rev_emb_dict, tokenizer, max_tokens)
         print(bleu_test)
-
-
     else:
         # train
         saves_path = os.path.join(SAVES_DIR, args.name)
@@ -195,7 +226,7 @@ if __name__ == "__main__":
             if args.dataset == "csqa":
                 phrase_pairs, emb_dict = data.load_data_from_existing_data(TRAIN_QUESTION_PATH, TRAIN_ACTION_PATH, DIC_PATH, MAX_TOKENS)
             else:
-                phrase_pairs, emb_dict = data.load_data_from_existing_data(TRAIN_QUESTION_PATH_WEBQSP, TRAIN_ACTION_PATH_WEBQSP, DIC_PATH_WEBQSP, MAX_TOKENS)
+                phrase_pairs, emb_dict = data.load_data_from_existing_data_bert(tokenizer,TRAIN_QUESTION_PATH_WEBQSP, TRAIN_ACTION_PATH_WEBQSP, DIC_PATH_WEBQSP, MAX_TOKENS)
 
 
         if args.int:
@@ -203,7 +234,7 @@ if __name__ == "__main__":
             if args.dataset == "csqa":
                 phrase_pairs, emb_dict = data.load_data_from_existing_data(TRAIN_QUESTION_PATH_INT, TRAIN_ACTION_PATH_INT, DIC_PATH_INT, MAX_TOKENS_INT)
             else:
-                phrase_pairs, emb_dict = data.load_data_from_existing_data(TRAIN_QUESTION_PATH_INT_WEBQSP, TRAIN_ACTION_PATH_INT_WEBQSP, DIC_PATH_INT_WEBQSP, MAX_TOKENS_INT)
+                phrase_pairs, emb_dict = data.load_data_from_existing_data_bert(tokenizer,TRAIN_QUESTION_PATH_INT_WEBQSP, TRAIN_ACTION_PATH_INT_WEBQSP, DIC_PATH_INT_WEBQSP, MAX_TOKENS_INT)
 
         if args.bert:
             log.info("Training model with BERT...")
@@ -215,7 +246,8 @@ if __name__ == "__main__":
         data.save_emb_dict(saves_path, emb_dict)
         end_token = emb_dict[data.END_TOKEN]
         # 将tokens转换为emb_dict中的indices;
-        train_data = data.encode_phrase_pairs(phrase_pairs, emb_dict)
+        # train_data = data.encode_phrase_pairs(phrase_pairs, emb_dict)
+        train_data = data.encode_phrase_pairs_bert(tokenizer, phrase_pairs, emb_dict)
         rand = np.random.RandomState(data.SHUFFLE_SEED)
         rand.shuffle(train_data)
         log.info("Training data converted, got %d samples", len(train_data))
@@ -233,8 +265,7 @@ if __name__ == "__main__":
         net = bert_model.CqaBertModel(pre_trained_model_name=PRE_TRAINED_MODEL_NAME, fix_flag=args.fix_bert, emb_size=args.word_dimension, dict_size=len(emb_dict), hid_size=model.HIDDEN_STATE_SIZE, LSTM_FLAG=args.lstm).to(device)
         tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
 
-        # 转到cuda
-        net.cuda()
+        # 转到cuda       net.cuda()
         log.info("Model: %s", net)
 
         writer = SummaryWriter(comment="-" + args.name)
@@ -366,6 +397,7 @@ if __name__ == "__main__":
                 losses.append(loss_v.item())
             bleu = bleu_sum / bleu_count
             bleu_test = run_test(test_data, net, end_token, device, rev_emb_dict, tokenizer, max_tokens)
+            # true_test = run_test_true_reward()
             log.info("Epoch %d: mean loss %.3f, mean BLEU %.3f, test BLEU %.3f",
                      epoch, np.mean(losses), bleu, bleu_test)
             writer.add_scalar("loss", np.mean(losses), epoch)
@@ -376,6 +408,7 @@ if __name__ == "__main__":
                     out_name = os.path.join(saves_path, "pre_bleu_%.3f_%02d.dat" %
                                             (bleu_test, epoch))
                     torch.save(net.state_dict(), out_name)
+                    print("Model saved in: {}.".format(out_name))
                     log.info("Best BLEU updated %.3f", bleu_test)
                 best_bleu = bleu_test
 

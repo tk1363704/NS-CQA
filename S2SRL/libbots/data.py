@@ -6,6 +6,7 @@ import itertools
 import pickle
 import json
 import torch
+from transformers import BertModel, BertTokenizer, AdamW, get_linear_schedule_with_warmup
 
 from . import cornell
 
@@ -50,6 +51,21 @@ def encode_words(words, emb_dict):
     res.append(emb_dict[END_TOKEN])
     return res
 
+def encode_words_bert(tokenizer, words, emb_dict):
+    """
+    Convert list of words into list of embeddings indices, adding our tokens
+    :param words: list of strings
+    :param emb_dict: embeddings dictionary
+    :return: list of IDs
+    """
+    words = tokenizer.tokenize(words)
+    res = [emb_dict[BEGIN_TOKEN]]
+    unk_idx = emb_dict[UNKNOWN_TOKEN]
+    for w in words:
+        idx = emb_dict.get(w.lower(), unk_idx)
+        res.append(idx)
+    res.append(emb_dict[END_TOKEN])
+    return res
 
 def encode_words_for_retriever(words, emb_dict):
     """
@@ -83,6 +99,23 @@ def encode_phrase_pairs(phrase_pairs, emb_dict, filter_unknows=True):
         result.append(p)
     return result
 
+def encode_phrase_pairs_bert(tokenizer, phrase_pairs, emb_dict, filter_unknows=True):
+    """
+    Convert list of phrase pairs to training data
+    :param phrase_pairs: list of (phrase, phrase)
+    :param emb_dict: embeddings dictionary (word -> id)
+    :return: list of tuples ([input_id_seq], [output_id_seq])
+    """
+    unk_token = emb_dict[UNKNOWN_TOKEN]
+    result = []
+    for p1, p2 in phrase_pairs:
+
+        p = encode_words(p1, emb_dict), encode_words(p2, emb_dict)
+        '''It is not correct to exclude the sample with 'UNK' from the dataset.'''
+        # if unk_token in p[0] or unk_token in p[1]:
+        #     continue
+        result.append(p)
+    return result
 
 def encode_phrase_pairs_RLTR(phrase_pairs, emb_dict, filter_unknows=True):
     """
@@ -221,6 +254,25 @@ def get_question_token_list(path):
                 # print(count)
     return token_list
 
+def get_question_token_list_bert(tokenizer, path):
+    with open(path, 'r', encoding="UTF-8") as infile:
+        token_list = list()
+        count = 0
+        while True:
+            lines_gen = list(islice(infile, LINE_SIZE))
+            if not lines_gen:
+                break
+            for line in lines_gen:
+                line = str(line).replace("<E>", "").replace("</E>", "")\
+                    .replace("<R>", "").replace("</R>", "").replace("<T>", "").replace("</T>", "")
+                line = line.strip().split(' ')[1:]
+                line = " ".join(line)
+                tokens = tokenizer.tokenize(line)
+                token_list.append(tokens)
+                count = count + 1
+                # print(count)
+    return token_list
+
 
 def get_action_token_list(path):
     with open(path, 'r', encoding="UTF-8") as infile:
@@ -237,6 +289,24 @@ def get_action_token_list(path):
                 # print(count)
     return token_list
 
+def get_action_token_list_bert(tokenizer, path):
+    with open(path, 'r', encoding="UTF-8") as infile:
+        token_list = list()
+        count = 0
+        while True:
+            lines_gen = list(islice(infile, LINE_SIZE))
+            if not lines_gen:
+                break
+            for line in lines_gen:
+                line = str(line).replace("<E>", "").replace("</E>", "") \
+                    .replace("<R>", "").replace("</R>", "").replace("<T>", "").replace("</T>", "")
+                line = line.strip().split(' ')[1:]
+                line = " ".join(line)
+                tokens = tokenizer.tokenize(line)
+                token_list.append(tokens)
+                count = count + 1
+                # print(count)
+    return token_list
 
 def get_vocab(path):
     with open(path, 'r', encoding="UTF-8") as infile:
@@ -302,6 +372,30 @@ def load_data_from_existing_data(QUESTION_PATH, ACTION_PATH, DIC_PATH, max_token
             next_id += 1
     return result, res
 
+def load_data_from_existing_data_bert(tokenizer, QUESTION_PATH, ACTION_PATH, DIC_PATH, max_tokens=None):
+    """
+    Convert dialogues to training pairs of phrases
+    :param dialogues:
+    :param max_tokens: limit of tokens in both question and reply
+    :return: list of (phrase, phrase) pairs
+    """
+    question_list = get_question_token_list_bert(tokenizer, QUESTION_PATH)
+    action_list = get_action_token_list_bert(tokenizer, ACTION_PATH)
+    vocab_list = get_vocab(DIC_PATH)
+
+    result = []
+    if len(question_list) == len(action_list):
+        for i in range(len(question_list)):
+            if max_tokens is None or (len(question_list[i]) <= max_tokens and len(action_list[i]) <= max_tokens):
+                result.append((question_list[i], action_list[i]))
+
+    res = {UNKNOWN_TOKEN: 0, BEGIN_TOKEN: 1, END_TOKEN: 2}
+    next_id = 3
+    for w in vocab_list:
+        if w not in res:
+            res[w] = next_id
+            next_id += 1
+    return result, res
 
 def load_RL_data(QUESTION_PATH, ACTION_PATH, DIC_PATH, max_tokens=None):
     qdict, adict = get_RL_question_action_list(QUESTION_PATH, ACTION_PATH)

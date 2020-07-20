@@ -58,6 +58,38 @@ def run_test(test_data, net, end_token, device="cuda"):
         bleu_count += 1
     return bleu_sum / bleu_count
 
+# Calculate 0-1 sparse reward for samples in test dataset to judge the performance of the model.
+def run_test_true_reward(test_data, net, rev_emb_dict, end_token, device="cuda"):
+    argmax_reward_sum = 0.0
+    argmax_reward_count = 0.0
+    # p1 is one sentence, p2 is sentence list.
+    for p1, p2 in test_data:
+        # Transform sentence to padded embeddings.
+        input_seq = net.pack_input(p1, net.emb, device)
+        # Get hidden states from encoder.
+        # enc = net.encode(input_seq)
+        context, enc = net.encode_context(input_seq)
+        # Decode sequence by feeding predicted token to the net again. Act greedily.
+        # Return N*outputvocab, N output token indices.
+        _, tokens = net.decode_chain_argmax(enc, net.emb(beg_token), seq_len=data.MAX_TOKENS, context = context[0], stop_at_token=end_token)
+        # Show what the output action sequence is.
+        action_tokens = []
+        for temp_idx in tokens:
+            if temp_idx in rev_emb_dict and rev_emb_dict.get(temp_idx) != '#END':
+                action_tokens.append(str(rev_emb_dict.get(temp_idx)).upper())
+        # Using 0-1 reward to compute accuracy.
+        if args.dataset == "csqa":
+            argmax_reward_sum += float(utils.calc_True_Reward(action_tokens, p2, False))
+        else:
+            argmax_reward_sum += float(utils.calc_True_Reward_webqsp_novar(action_tokens, p2, False))
+
+        argmax_reward_count += 1
+
+    if argmax_reward_count == 0:
+        return 0.0
+    else:
+        return float(argmax_reward_sum) / float(argmax_reward_count)
+
 if __name__ == "__main__":
     logging.basicConfig(format="%(asctime)-15s %(levelname)s %(message)s", level=logging.INFO)
 
