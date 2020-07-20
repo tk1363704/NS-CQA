@@ -76,17 +76,25 @@ def run_test(test_data, net, end_token, device="cuda", rev_emb_dict=None, tokeni
 def run_test_true_reward(test_data, net, rev_emb_dict, end_token, device="cuda"):
     argmax_reward_sum = 0.0
     argmax_reward_count = 0.0
+
+    # BEGIN token
+    beg_token = torch.LongTensor([emb_dict[data.BEGIN_TOKEN]]).to(device)
+    beg_token = beg_token.cuda()
+
     # p1 is one sentence, p2 is sentence list.
     for p1, p2 in test_data:
-        # Transform sentence to padded embeddings.
+        p_list = [(p1, p2)]
+        input_ids, attention_masks = tokenizer_encode(tokenizer, p_list, rev_emb_dict, device, max_tokens)
+        output, output_hidden_states = net.bert_encode(input_ids, attention_masks)
+        context, enc = output_hidden_states, (output.unsqueeze(0), output.unsqueeze(0))
         input_seq = net.pack_input(p1, net.emb, device)
-        # Get hidden states from encoder.
-        # enc = net.encode(input_seq)
-        context, enc = net.encode_context(input_seq)
-        # Decode sequence by feeding predicted token to the net again. Act greedily.
-        # Return N*outputvocab, N output token indices.
-        _, tokens = net.decode_chain_argmax(enc, net.emb(beg_token), seq_len=data.MAX_TOKENS, context = context[0], stop_at_token=end_token)
-        # Show what the output action sequence is.
+        # Return logits (N*outputvocab), res_tokens (1*N)
+        # Always use the first token in input sequence, which is '#BEG' as the initial input of decoder.
+        # The maximum length of the output is defined in class libbots.data.
+        _, tokens = net.decode_chain_argmax(enc, input_seq.data[0:1],
+                                            seq_len=data.MAX_TOKENS,
+                                            context=context[0],
+                                            stop_at_token=end_token)
         action_tokens = []
         for temp_idx in tokens:
             if temp_idx in rev_emb_dict and rev_emb_dict.get(temp_idx) != '#END':
@@ -397,7 +405,7 @@ if __name__ == "__main__":
                 losses.append(loss_v.item())
             bleu = bleu_sum / bleu_count
             bleu_test = run_test(test_data, net, end_token, device, rev_emb_dict, tokenizer, max_tokens)
-            # true_test = run_test_true_reward()
+            # true_test = run_test_true_reward(test_data, net, rev_emb_dict, end_token)
             log.info("Epoch %d: mean loss %.3f, mean BLEU %.3f, test BLEU %.3f",
                      epoch, np.mean(losses), bleu, bleu_test)
             writer.add_scalar("loss", np.mean(losses), epoch)
