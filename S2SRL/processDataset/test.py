@@ -275,12 +275,35 @@ def testChunk():
     print(d4.size())
     print(d4)
 
+
+def sparsemax(z):
+    z_sorted = sorted(z, reverse=True)
+    # print('z_sorted: ' + str(z_sorted))
+    k = np.arange(len(z)) + 1
+    # print('k: ' + str(k))
+    k_array = 1 + k * z_sorted
+    # print('k_array: ' + str(k_array))
+    # 从第一个元素向后累加;
+    z_cumsum = np.cumsum(z_sorted)
+    # print('z_cumsum: ' + str(z_cumsum))
+    k_selected = k_array > z_cumsum
+    # print('k_selected: ' + str(k_selected))
+    # The maximum index of the element which is TRUE in k_selected.
+    k_max = np.where(k_selected)[0].max() + 1
+    # print('k_max: ' + str(k_max))
+    threshold = (z_cumsum[k_max-1] - 1) / k_max
+    # print('threshold: ' + str(threshold))
+    return np.maximum(z-threshold, 0)
+
 if __name__ == "__main__":
     # test()
     # test1()
     # test_digits()
     # print(dict_test())
-    testChunk()
+    # testChunk()
+    print('sparsemax of [0.1, 1.1, 0.2, 0.3]: '+str(sparsemax([0.1, 1.1, 0.2, 0.3])))
+    print('sparsemax of [1, 0.00101, 0.0002, 0.002, 0.003, 0.0004]: ' + str(sparsemax([1, 0.00101, 0.0002, 0.002, 0.003, 0.0004])))
+    print('sparsemax of [0, 0, 0, 0, 0, 0]: ' + str(sparsemax([0, 0, 0, 0, 0, 0])))
 
 
 

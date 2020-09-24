@@ -319,7 +319,7 @@ if __name__ == "__main__":
                             prob = prob_v[range(len(actions)), actions_t].to(device)
                             # Get the probability of the action sequence.
                             prob_prod = prob.prod().to(device)
-                            # Get the unbiased rewaed.
+                            # Get the unbiased reward.
                             advantage = sample_reward - argmax_reward
                             nsm_prob_list.append(prob_prod)
                             nsm_advantage_list.append(advantage)
