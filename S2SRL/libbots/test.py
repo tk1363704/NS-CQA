@@ -128,12 +128,18 @@ if __name__ == "__main__":
 
     # print(duplicate(s1, s2))
 
-    ETA = 0.08
-    LAMBDA_0 = 0.1
-    epoch = 0
-    print(math.pow(1.0 + ETA, float(epoch) + 1.0) * LAMBDA_0)
-    print(min(1.0, math.pow(1.0 + ETA, float(epoch) + 1.0) * LAMBDA_0))
+    # ETA = 0.08
+    # LAMBDA_0 = 0.1
+    # epoch = 0
+    # print(math.pow(1.0 + ETA, float(epoch) + 1.0) * LAMBDA_0)
+    # print(min(1.0, math.pow(1.0 + ETA, float(epoch) + 1.0) * LAMBDA_0))
 
+    rnn = nn.LSTM(300, 128, num_layers=1, batch_first=True)
+    input = torch.randn(32, 1, 300)
+    h0 = torch.randn(1, 3, 20)
+    c0 = torch.randn(1, 3, 20)
+    output, (hn, cn) = rnn(input)
+    print((hn, cn))
 
     '''max_length = 50
     batch_size = 5
