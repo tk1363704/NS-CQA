@@ -8,7 +8,7 @@ import sys
 from tensorboardX import SummaryWriter
 import time
 from libbots import data, model, utils, bert_model
-from transformers import BertModel, BertTokenizer, AdamW, get_linear_schedule_with_warmup
+from transformers import BertModel, BertTokenizer, AutoTokenizer, AdamW, get_linear_schedule_with_warmup
 
 import torch
 import torch.optim as optim
@@ -18,7 +18,7 @@ SAVES_DIR = "../data/saves"
 
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
-MAX_EPOCHES = 100
+MAX_EPOCHES = 20
 MAX_TOKENS = 40
 MAX_TOKENS_INT = 43
 
@@ -177,7 +177,8 @@ if __name__ == "__main__":
     log.info("Device info: %s", str(device))
 
     max_tokens = (MAX_TOKENS_INT + 40) if args.int else (MAX_TOKENS + 40)
-    tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
+    # tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
 
     if args.mode == "test":
         # To get the input-output pairs and the relevant dictionary.
@@ -271,7 +272,8 @@ if __name__ == "__main__":
             log.info("Using RNN mechanism to train the SEQ2SEQ model...")
 
         net = bert_model.CqaBertModel(pre_trained_model_name=PRE_TRAINED_MODEL_NAME, fix_flag=args.fix_bert, emb_size=args.word_dimension, dict_size=len(emb_dict), hid_size=model.HIDDEN_STATE_SIZE, LSTM_FLAG=args.lstm).to(device)
-        tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
+        # tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=PRE_TRAINED_MODEL_NAME)
+        tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
 
         # 转到cuda       net.cuda()
         log.info("Model: %s", net)
