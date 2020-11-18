@@ -209,6 +209,7 @@ if __name__ == "__main__":
             out_name = os.path.join(saves_path, "epoch_%03d_%.3f_%.3f.dat" %
                                     (epoch, bleu, bleu_test))
             torch.save(net.state_dict(), out_name)
+            log.info("Model epoch {} saved in: {}".format(epoch, out_name))
         print ("------------------Epoch " + str(epoch) + ": training is over.------------------")
 
     time_end = time.time()
